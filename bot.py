@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import aiosqlite
+import re
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 
@@ -15,6 +16,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 # ================ НАСТРОЙКА ЛОГИРОВАНИЯ ================
 logging.basicConfig(
@@ -24,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================ КОНФИГУРАЦИЯ ================
-BOT_TOKEN = "8646923068:AAEdgYd6GdqifXBEg5gibYv1_0yglDLYv60"
+BOT_TOKEN = "8646923068:AAEdgYd6GdqifXBEg5gibYv1_0yglDLYv60"  # Замените на свой токен
 PASSWORD = "барбер123"  # Пароль для авторизации
 AUTHORIZED_USERS = set()  # Множество авторизованных пользователей
 
@@ -32,7 +34,7 @@ AUTHORIZED_USERS = set()  # Множество авторизованных по
 BRANCHES = ["Щелковская", "Измайловская", "Первомайская"]
 
 # Порог для отображения в "Нужно купить"
-LOW_STOCK_THRESHOLD = 3
+LOW_STOCK_THRESHOLD = 5
 
 # ================ ДАННЫЕ О МАТЕРИАЛАХ ================
 MATERIALS = [
@@ -40,7 +42,7 @@ MATERIALS = [
     {"id": 2, "name": "Освежители воздуха", "category": "Туалет", "unit": "шт"},
     {"id": 3, "name": "Средство для полов", "category": "Уборка", "unit": "шт"},
     {"id": 4, "name": "Средство для стёкол", "category": "Уборка", "unit": "шт"},
-    {"id": 5, "name": "Средство для раковин/туалета", "category": "Уборка", "unit": "шт"},
+    {"id": 5, "name": "Средство для раковины/туалета", "category": "Уборка", "unit": "шт"},
     {"id": 6, "name": "Тряпки", "category": "Уборка", "unit": "шт"},
     {"id": 7, "name": "Стаканчики", "category": "Напитки", "unit": "упаковка"},
     {"id": 8, "name": "Вода", "category": "Напитки", "unit": "шт"},
@@ -67,7 +69,11 @@ class UserStates(StatesGroup):
     branch_selected = State()   # Филиал выбран, работаем
 
 # ================ ИНИЦИАЛИЗАЦИЯ БОТА ================
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# Исправленная инициализация для новой версии aiogram
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
@@ -83,7 +89,7 @@ async def init_db():
                 location TEXT,
                 material_id INTEGER,
                 quantity INTEGER DEFAULT 0,
-                min_stock INTEGER DEFAULT 1,
+                min_stock INTEGER DEFAULT 5,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (location, material_id)
             )
@@ -407,7 +413,6 @@ async def process_operation(message: Message, state: FSMContext):
         return
     
     # Парсим сообщение
-    import re
     match = re.match(r'^(приход|расход)\s+(.+?)\s+(\d+)$', message.text)
     if not match:
         return
