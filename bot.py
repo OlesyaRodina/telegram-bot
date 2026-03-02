@@ -1,337 +1,487 @@
-import os
-import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import asyncio
-import json
+import logging
+import aiosqlite
+from typing import Dict, Optional, Tuple
 from datetime import datetime
 
-# ================ ДАННЫЕ ================
-TOKEN = "8646923068:AAEdgYd6GdqifXBEg5gibYv1_0yglDLYv60"  # Ваш токен
-PASSWORD = "барбер123"
-OWNER_ID = None
-authorized_users = set()
-DATA_FILE = "materials.json"
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    Message, ReplyKeyboardMarkup, KeyboardButton,
+    ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+)
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.enums import ParseMode
 
-ALERT_USER_ID = 1007254983
+# ================ НАСТРОЙКА ЛОГИРОВАНИЯ ================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Материалы
-materials = {
-    1: {'name': 'Туалетная бумага', 'category': 'Туалет', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 1},
-    2: {'name': 'Освежители воздуха', 'category': 'Туалет', 'unit': 'шт', 'quantity': 1, 'min_stock': 2},
-    3: {'name': 'Средство для полов', 'category': 'Уборка', 'unit': 'шт', 'quantity': 3, 'min_stock': 1},
-    4: {'name': 'Средство для стекол', 'category': 'Уборка', 'unit': 'шт', 'quantity': 1, 'min_stock': 1},
-    5: {'name': 'Средство для раковины/туалета', 'category': 'Уборка', 'unit': 'шт', 'quantity': 0, 'min_stock': 1},
-    6: {'name': 'Тряпки', 'category': 'Уборка', 'unit': 'шт', 'quantity': 2, 'min_stock': 1},
-    7: {'name': 'Стаканчики', 'category': 'Напитки', 'unit': 'упаковка', 'quantity': 2, 'min_stock': 2},
-    8: {'name': 'Вода', 'category': 'Напитки', 'unit': 'шт', 'quantity': 1, 'min_stock': 1},
-    9: {'name': 'Лезвия', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 2},
-    10: {'name': 'Конфеты', 'category': 'Для админа', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 1},
-    11: {'name': 'Мята', 'category': 'Для админа', 'unit': 'шт', 'quantity': 5, 'min_stock': 2},
-    12: {'name': 'Одноразовые полотенца', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 2, 'min_stock': 2},
-    13: {'name': 'Перчатки', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 2},
-    14: {'name': 'Ватные диски', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 2},
-    15: {'name': 'Ватные палочки', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 3, 'min_stock': 2},
-    16: {'name': 'Шпатели для воска', 'category': 'Доп услуги', 'unit': 'шт', 'quantity': 15, 'min_stock': 20},
-    17: {'name': 'Воск', 'category': 'Доп услуги', 'unit': 'упаковка', 'quantity': 1, 'min_stock': 1},
-    18: {'name': 'Воротники', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 4, 'min_stock': 4},
-}
+# ================ КОНФИГУРАЦИЯ ================
+BOT_TOKEN = "8646923068:AAEdgYd6GdqifXBEg5gibYv1_0yglDLYv60"
+PASSWORD = "барбер123"  # Пароль для авторизации
+AUTHORIZED_USERS = set()  # Множество авторизованных пользователей
 
-def load_materials():
-    global materials
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                materials = {int(k): v for k, v in loaded.items()}
-                print("✅ Данные загружены")
-    except:
-        print("📁 Создаем новые данные")
-        save_materials()
+# Филиалы
+BRANCHES = ["Щелковская", "Измайловская", "Первомайская"]
 
-def save_materials():
-    try:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(materials, f, ensure_ascii=False, indent=2)
-        return True
-    except:
-        return False
+# Порог для отображения в "Нужно купить"
+LOW_STOCK_THRESHOLD = 3
 
-load_materials()
+# ================ ДАННЫЕ О МАТЕРИАЛАХ ================
+MATERIALS = [
+    {"id": 1, "name": "Туалетная бумага", "category": "Туалет", "unit": "упаковка"},
+    {"id": 2, "name": "Освежители воздуха", "category": "Туалет", "unit": "шт"},
+    {"id": 3, "name": "Средство для полов", "category": "Уборка", "unit": "шт"},
+    {"id": 4, "name": "Средство для стёкол", "category": "Уборка", "unit": "шт"},
+    {"id": 5, "name": "Средство для раковин/туалета", "category": "Уборка", "unit": "шт"},
+    {"id": 6, "name": "Тряпки", "category": "Уборка", "unit": "шт"},
+    {"id": 7, "name": "Стаканчики", "category": "Напитки", "unit": "упаковка"},
+    {"id": 8, "name": "Вода", "category": "Напитки", "unit": "шт"},
+    {"id": 9, "name": "Лезвия", "category": "Для мастеров", "unit": "упаковка"},
+    {"id": 10, "name": "Конфеты", "category": "Для админа", "unit": "упаковка"},
+    {"id": 11, "name": "Мята", "category": "Для админа", "unit": "шт"},
+    {"id": 12, "name": "Одноразовые полотенца", "category": "Для мастеров", "unit": "упаковка"},
+    {"id": 13, "name": "Перчатки", "category": "Для мастеров", "unit": "упаковка"},
+    {"id": 14, "name": "Ватные диски", "category": "Для мастеров", "unit": "упаковка"},
+    {"id": 15, "name": "Ватные палочки", "category": "Для мастеров", "unit": "упаковка"},
+    {"id": 16, "name": "Шпатели для воска", "category": "Доп услуги", "unit": "шт"},
+    {"id": 17, "name": "Воск", "category": "Доп услуги", "unit": "упаковка"},
+    {"id": 18, "name": "Воротники", "category": "Для мастеров", "unit": "упаковка"},
+]
 
-def get_categories():
-    cats = set()
-    for item in materials.values():
-        cats.add(item['category'])
-    return sorted(list(cats))
+# Словарь для быстрого доступа по имени
+MATERIALS_BY_NAME = {m["name"]: m for m in MATERIALS}
+MATERIALS_BY_ID = {m["id"]: m for m in MATERIALS}
 
-def check_low_stock():
-    low = []
-    for id, item in materials.items():
-        if item['quantity'] <= item['min_stock']:
-            low.append((id, f"🔴 {item['name']}: {item['quantity']} {item['unit']}"))
-    return low
+# ================ FSM СОСТОЯНИЯ ================
+class UserStates(StatesGroup):
+    """Состояния пользователя"""
+    selecting_branch = State()  # Выбор филиала
+    branch_selected = State()   # Филиал выбран, работаем
 
-async def send_alert(context):
-    if not ALERT_USER_ID:
-        return
+# ================ ИНИЦИАЛИЗАЦИЯ БОТА ================
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+router = Router()
+dp.include_router(router)
+
+# ================ РАБОТА С БАЗОЙ ДАННЫХ ================
+async def init_db():
+    """Инициализация базы данных"""
+    async with aiosqlite.connect('materials.db') as db:
+        # Создаём таблицу для остатков
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS stock (
+                location TEXT,
+                material_id INTEGER,
+                quantity INTEGER DEFAULT 0,
+                min_stock INTEGER DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (location, material_id)
+            )
+        ''')
+        
+        # Создаём таблицу для истории операций
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                location TEXT,
+                material_id INTEGER,
+                operation_type TEXT,
+                quantity INTEGER,
+                user_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Заполняем начальными данными, если таблица пуста
+        for location in BRANCHES:
+            for material in MATERIALS:
+                await db.execute('''
+                    INSERT OR IGNORE INTO stock (location, material_id, quantity, min_stock)
+                    VALUES (?, ?, 0, 5)
+                ''', (location, material["id"]))
+        
+        await db.commit()
+        logger.info("База данных инициализирована")
+
+async def get_stock(location: str, material_id: int = None) -> Dict:
+    """Получить остатки по локации"""
+    async with aiosqlite.connect('materials.db') as db:
+        if material_id:
+            async with db.execute(
+                'SELECT quantity FROM stock WHERE location = ? AND material_id = ?',
+                (location, material_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+        else:
+            async with db.execute(
+                'SELECT material_id, quantity FROM stock WHERE location = ?',
+                (location,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return {row[0]: row[1] for row in rows}
+
+async def update_stock(location: str, material_id: int, change: int, user_id: int, operation: str):
+    """Обновить остатки и записать операцию"""
+    async with aiosqlite.connect('materials.db') as db:
+        # Получаем текущее количество
+        async with db.execute(
+            'SELECT quantity FROM stock WHERE location = ? AND material_id = ?',
+            (location, material_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            current = row[0] if row else 0
+        
+        new_quantity = max(0, current + change)  # Не даём уйти в минус
+        
+        # Обновляем остаток
+        await db.execute('''
+            UPDATE stock 
+            SET quantity = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE location = ? AND material_id = ?
+        ''', (new_quantity, location, material_id))
+        
+        # Записываем операцию
+        await db.execute('''
+            INSERT INTO operations (location, material_id, operation_type, quantity, user_id)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (location, material_id, operation, abs(change), user_id))
+        
+        await db.commit()
+        return new_quantity
+
+async def get_low_stock(location: str) -> list:
+    """Получить материалы с низким остатком"""
+    async with aiosqlite.connect('materials.db') as db:
+        async with db.execute('''
+            SELECT material_id, quantity FROM stock 
+            WHERE location = ? AND quantity < ?
+        ''', (location, LOW_STOCK_THRESHOLD)) as cursor:
+            rows = await cursor.fetchall()
+            return rows
+
+# ================ КЛАВИАТУРЫ ================
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Главная клавиатура (вертикальный столбик)
+    Кнопки:
+    📦 Склад
+    🛒 Нужно купить
+    📍 Точка
+    """
+    builder = ReplyKeyboardBuilder()
     
-    low_items = check_low_stock()
-    if low_items:
-        text = "⚠️ ВНИМАНИЕ! Закончились материалы:\n\n"
-        for _, msg in low_items:
-            text += msg + "\n"
-        try:
-            await context.bot.send_message(chat_id=ALERT_USER_ID, text=text)
-        except:
-            pass
+    # Добавляем кнопки вертикально (каждая на новой строке)
+    builder.row(KeyboardButton(text="📦 Склад"))
+    builder.row(KeyboardButton(text="🛒 Нужно купить"))
+    builder.row(KeyboardButton(text="📍 Точка"))
+    
+    return builder.as_markup(
+        resize_keyboard=True,
+        is_persistent=True,      # Клавиатура всегда видна
+        one_time_keyboard=False  # Не скрывается после нажатия
+    )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
+def get_branches_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Клавиатура выбора филиала
+    """
+    builder = ReplyKeyboardBuilder()
     
-    keyboard = [
-        [InlineKeyboardButton("📦 Посмотреть материалы", callback_data="main_menu")],
-        [InlineKeyboardButton("➕ Добавить материалы", callback_data="add_menu")],
-        [InlineKeyboardButton("➖ Списать материалы", callback_data="remove_menu")],
-        [InlineKeyboardButton("⚠️ Проверить остатки", callback_data="check_low")]
-    ]
+    for branch in BRANCHES:
+        builder.row(KeyboardButton(text=branch))
     
-    if user_id in authorized_users:
-        await update.message.reply_text(
-            f"👋 Привет, {user.first_name}!\nВыбери действие:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    builder.row(KeyboardButton(text="◀️ Назад"))
+    
+    return builder.as_markup(
+        resize_keyboard=True,
+        is_persistent=True,
+        one_time_keyboard=False
+    )
+
+# ================ ПРОВЕРКА АВТОРИЗАЦИИ ================
+def is_authorized(user_id: int) -> bool:
+    """Проверка, авторизован ли пользователь"""
+    return user_id in AUTHORIZED_USERS
+
+# ================ ХЭНДЛЕРЫ ================
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    """Обработчик команды /start"""
+    user_id = message.from_user.id
+    
+    if is_authorized(user_id):
+        await message.answer(
+            "👋 <b>Добро пожаловать в систему учёта расходных материалов!</b>\n\n"
+            "Выберите действие с помощью кнопок ниже ⬇️\n\n"
+            "📦 <b>Склад</b> — посмотреть все материалы\n"
+            "🛒 <b>Нужно купить</b> — что заканчивается\n"
+            "📍 <b>Точка</b> — выбрать филиал",
+            reply_markup=get_main_keyboard()
         )
     else:
-        await update.message.reply_text("🔒 Введите пароль: /login пароль")
+        await message.answer(
+            "🔒 <b>Требуется авторизация</b>\n\n"
+            "Введите пароль: /login <пароль>"
+        )
 
-async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global OWNER_ID, ALERT_USER_ID
+@router.message(Command("login"))
+async def cmd_login(message: Message):
+    """Авторизация по паролю"""
+    user_id = message.from_user.id
+    args = message.text.split()
     
-    user_id = update.effective_user.id
-    
-    try:
-        if context.args[0] == PASSWORD:
-            authorized_users.add(user_id)
-            
-            if OWNER_ID is None:
-                OWNER_ID = user_id
-                ALERT_USER_ID = user_id
-                await update.message.reply_text("✅ Вы назначены владельцем бота!")
-            
-            await update.message.reply_text(
-                "✅ Вход выполнен!\n"
-                "Используйте /start для главного меню"
-            )
-            
-            await send_alert(context)
-        else:
-            await update.message.reply_text("❌ Неверный пароль")
-    except:
-        await update.message.reply_text("❌ Используйте: /login пароль")
-
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    if user_id not in authorized_users:
-        await query.edit_message_text("🔒 Нет доступа")
+    if len(args) < 2:
+        await message.answer("❌ Используйте: /login пароль")
         return
     
-    data = query.data
-    
-    if data == "main_menu":
-        keyboard = []
-        for cat in get_categories():
-            keyboard.append([InlineKeyboardButton(cat, callback_data=f"cat_{cat}")])
-        keyboard.append([InlineKeyboardButton("📦 Всё", callback_data="all")])
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
-        
-        await query.edit_message_text(
-            "📋 Выберите категорию:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    if args[1] == PASSWORD:
+        AUTHORIZED_USERS.add(user_id)
+        await message.answer(
+            "✅ <b>Авторизация успешна!</b>\n\n"
+            "Отправьте /start для начала работы"
         )
+    else:
+        await message.answer("❌ Неверный пароль")
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    """Сброс состояния"""
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("👌 Нет активного действия")
+        return
     
-    elif data == "add_menu":
-        keyboard = []
-        for id, item in materials.items():
-            keyboard.append([InlineKeyboardButton(
-                f"+ {item['name']} ({item['quantity']} {item['unit']})", 
-                callback_data=f"add_{id}"
-            )])
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
-        
-        await query.edit_message_text(
-            "➕ Выберите материал для добавления:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    await state.clear()
+    await message.answer(
+        "✅ Действие отменено",
+        reply_markup=get_main_keyboard()
+    )
+
+@router.message(F.text == "📍 Точка")
+async def cmd_branch(message: Message, state: FSMContext):
+    """Выбор филиала"""
+    if not is_authorized(message.from_user.id):
+        await message.answer("🔒 Сначала авторизуйтесь: /login пароль")
+        return
+    
+    await state.set_state(UserStates.selecting_branch)
+    await message.answer(
+        "📍 <b>Выберите филиал:</b>",
+        reply_markup=get_branches_keyboard()
+    )
+
+@router.message(UserStates.selecting_branch, F.text.in_(BRANCHES))
+async def branch_selected(message: Message, state: FSMContext):
+    """Филиал выбран"""
+    branch = message.text
+    
+    # Сохраняем выбранный филиал
+    await state.update_data(selected_branch=branch)
+    await state.set_state(UserStates.branch_selected)
+    
+    await message.answer(
+        f"✅ Выбран филиал: <b>{branch}</b>\n\n"
+        f"Теперь вы можете:\n"
+        f"📦 Склад — посмотреть остатки на {branch}\n"
+        f"🛒 Нужно купить — что заканчивается на {branch}\n\n"
+        f"Или написать:\n"
+        f"<code>приход Материал 10</code> — добавить\n"
+        f"<code>расход Материал 3</code> — списать",
+        reply_markup=get_main_keyboard()
+    )
+
+@router.message(UserStates.selecting_branch, F.text == "◀️ Назад")
+async def back_from_branch_selection(message: Message, state: FSMContext):
+    """Назад из выбора филиала"""
+    await state.clear()
+    await message.answer(
+        "👋 Возврат в главное меню",
+        reply_markup=get_main_keyboard()
+    )
+
+@router.message(UserStates.selecting_branch)
+async def invalid_branch(message: Message):
+    """Неверный выбор филиала"""
+    await message.answer(
+        "❌ Пожалуйста, выберите филиал из списка кнопок",
+        reply_markup=get_branches_keyboard()
+    )
+
+@router.message(F.text == "📦 Склад")
+async def cmd_sklad(message: Message, state: FSMContext):
+    """Показать все материалы на выбранной точке"""
+    if not is_authorized(message.from_user.id):
+        await message.answer("🔒 Сначала авторизуйтесь: /login пароль")
+        return
+    
+    # Получаем состояние
+    data = await state.get_data()
+    branch = data.get("selected_branch")
+    
+    if not branch:
+        await message.answer(
+            "❌ Сначала выберите филиал через меню «📍 Точка»"
         )
+        return
     
-    elif data == "remove_menu":
-        keyboard = []
-        for id, item in materials.items():
-            if item['quantity'] > 0:
-                keyboard.append([InlineKeyboardButton(
-                    f"- {item['name']} ({item['quantity']} {item['unit']})", 
-                    callback_data=f"remove_{id}"
-                )])
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
-        
-        await query.edit_message_text(
-            "➖ Выберите материал для списания:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    # Получаем остатки
+    stock = await get_stock(branch)
+    
+    # Формируем сообщение
+    text = f"📦 <b>Склад — {branch}</b>\n\n"
+    
+    for material in MATERIALS:
+        quantity = stock.get(material["id"], 0)
+        status = "✅" if quantity >= LOW_STOCK_THRESHOLD else "⚠️"
+        text += f"{status} <b>{material['name']}</b>: {quantity} {material['unit']}\n"
+    
+    await message.answer(text, reply_markup=get_main_keyboard())
+
+@router.message(F.text == "🛒 Нужно купить")
+async def cmd_nuzhno(message: Message, state: FSMContext):
+    """Показать материалы, которые заканчиваются"""
+    if not is_authorized(message.from_user.id):
+        await message.answer("🔒 Сначала авторизуйтесь: /login пароль")
+        return
+    
+    # Получаем состояние
+    data = await state.get_data()
+    branch = data.get("selected_branch")
+    
+    if not branch:
+        await message.answer(
+            "❌ Сначала выберите филиал через меню «📍 Точка»"
         )
+        return
     
-    elif data.startswith("add_"):
-        item_id = int(data.split("_")[1])
-        item = materials[item_id]
-        
-        keyboard = [
-            [InlineKeyboardButton("➕ 1", callback_data=f"addq_{item_id}_1")],
-            [InlineKeyboardButton("➕ 2", callback_data=f"addq_{item_id}_2")],
-            [InlineKeyboardButton("➕ 5", callback_data=f"addq_{item_id}_5")],
-            [InlineKeyboardButton("➕ 10", callback_data=f"addq_{item_id}_10")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="add_menu")]
-        ]
-        
-        await query.edit_message_text(
-            f"📦 {item['name']}\n"
-            f"Текущее количество: {item['quantity']} {item['unit']}\n"
-            f"Минимум: {item['min_stock']} {item['unit']}\n\n"
-            f"Сколько добавить?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    # Получаем материалы с низким остатком
+    low_stock = await get_low_stock(branch)
+    
+    if not low_stock:
+        await message.answer(
+            f"✅ На <b>{branch}</b> все материалы в достатке!",
+            reply_markup=get_main_keyboard()
         )
+        return
     
-    elif data.startswith("remove_"):
-        item_id = int(data.split("_")[1])
-        item = materials[item_id]
-        
-        max_amount = min(item['quantity'], 10)
-        keyboard = []
-        row = []
-        for i in range(1, max_amount + 1):
-            row.append(InlineKeyboardButton(f"- {i}", callback_data=f"removeq_{item_id}_{i}"))
-            if len(row) == 3:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="remove_menu")])
-        
-        await query.edit_message_text(
-            f"📦 {item['name']}\n"
-            f"Текущее количество: {item['quantity']} {item['unit']}\n"
-            f"Минимум: {item['min_stock']} {item['unit']}\n\n"
-            f"Сколько списать?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    # Формируем сообщение
+    text = f"🛒 <b>Нужно купить — {branch}</b>\n\n"
+    
+    for material_id, quantity in low_stock:
+        material = MATERIALS_BY_ID[material_id]
+        text += f"⚠️ <b>{material['name']}</b>: осталось {quantity} {material['unit']}\n"
+        text += f"   Нужно докупить минимум {LOW_STOCK_THRESHOLD - quantity} {material['unit']}\n\n"
+    
+    await message.answer(text, reply_markup=get_main_keyboard())
+
+@router.message(F.text.regexp(r'^(приход|расход)\s+(.+?)\s+(\d+)$'))
+async def process_operation(message: Message, state: FSMContext):
+    """
+    Обработка операций прихода/расхода
+    Формат: приход Материал 10
+            расход Перчатки 3
+    """
+    if not is_authorized(message.from_user.id):
+        await message.answer("🔒 Сначала авторизуйтесь: /login пароль")
+        return
+    
+    # Получаем состояние
+    data = await state.get_data()
+    branch = data.get("selected_branch")
+    
+    if not branch:
+        await message.answer(
+            "❌ Сначала выберите филиал через меню «📍 Точка»"
         )
+        return
     
-    elif data.startswith("addq_"):
-        parts = data.split("_")
-        item_id = int(parts[1])
-        amount = int(parts[2])
-        
-        item = materials[item_id]
-        old_qty = item['quantity']
-        item['quantity'] += amount
-        save_materials()
-        
-        await query.edit_message_text(
-            f"✅ Добавлено: +{amount} {item['unit']}\n"
-            f"📦 {item['name']}\n"
-            f"Было: {old_qty} {item['unit']}\n"
-            f"Стало: {item['quantity']} {item['unit']}"
+    # Парсим сообщение
+    import re
+    match = re.match(r'^(приход|расход)\s+(.+?)\s+(\d+)$', message.text)
+    if not match:
+        return
+    
+    operation = match.group(1)  # приход или расход
+    material_name = match.group(2).strip()
+    quantity = int(match.group(3))
+    
+    # Ищем материал
+    material = None
+    for m in MATERIALS:
+        if m["name"].lower() == material_name.lower() or material_name.lower() in m["name"].lower():
+            material = m
+            break
+    
+    if not material:
+        await message.answer(
+            f"❌ Материал «{material_name}» не найден.\n\n"
+            f"Проверьте название или используйте /sklad для просмотра списка"
         )
-        
-        await asyncio.sleep(1)
-        await send_alert(context)
+        return
     
-    elif data.startswith("removeq_"):
-        parts = data.split("_")
-        item_id = int(parts[1])
-        amount = int(parts[2])
-        
-        item = materials[item_id]
-        if item['quantity'] >= amount:
-            old_qty = item['quantity']
-            item['quantity'] -= amount
-            save_materials()
-            
-            await query.edit_message_text(
-                f"✅ Списано: -{amount} {item['unit']}\n"
-                f"📦 {item['name']}\n"
-                f"Было: {old_qty} {item['unit']}\n"
-                f"Стало: {item['quantity']} {item['unit']}"
-            )
-            
-            await asyncio.sleep(1)
-            await send_alert(context)
+    # Обновляем остатки
+    change = quantity if operation == "приход" else -quantity
+    new_quantity = await update_stock(
+        branch, material["id"], change, 
+        message.from_user.id, operation
+    )
     
-    elif data.startswith("cat_"):
-        cat = data[4:]
-        text = f"📁 {cat}:\n\n"
-        for id, item in materials.items():
-            if item['category'] == cat:
-                status = "✅" if item['quantity'] > item['min_stock'] else "⚠️"
-                text += f"{status} {item['name']}: {item['quantity']} {item['unit']}\n"
-        
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await message.answer(
+        f"✅ <b>Операция выполнена!</b>\n\n"
+        f"📍 {branch}\n"
+        f"📦 {material['name']}\n"
+        f"{'➕' if operation == 'приход' else '➖'} {operation}: {quantity} {material['unit']}\n"
+        f"💰 Новый остаток: {new_quantity} {material['unit']}",
+        reply_markup=get_main_keyboard()
+    )
     
-    elif data == "all":
-        text = "📋 Все материалы:\n\n"
-        for id, item in materials.items():
-            status = "✅" if item['quantity'] > item['min_stock'] else "⚠️"
-            text += f"{status} {item['name']}: {item['quantity']} {item['unit']}\n"
-        
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    elif data == "check_low":
-        low = check_low_stock()
-        if low:
-            text = "⚠️ Мало материалов:\n\n"
-            for _, msg in low:
-                text += msg + "\n"
-        else:
-            text = "✅ Все материалы в норме!"
-        
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    elif data == "back_to_main":
-        keyboard = [
-            [InlineKeyboardButton("📦 Посмотреть материалы", callback_data="main_menu")],
-            [InlineKeyboardButton("➕ Добавить материалы", callback_data="add_menu")],
-            [InlineKeyboardButton("➖ Списать материалы", callback_data="remove_menu")],
-            [InlineKeyboardButton("⚠️ Проверить остатки", callback_data="check_low")]
-        ]
-        await query.edit_message_text(
-            "📋 Главное меню:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    # Проверяем, не упал ли остаток ниже порога
+    if new_quantity < LOW_STOCK_THRESHOLD:
+        await message.answer(
+            f"⚠️ Внимание! {material['name']} заканчивается!\n"
+            f"Осталось: {new_quantity} {material['unit']}"
         )
 
+@router.message()
+async def handle_unknown(message: Message, state: FSMContext):
+    """Обработка неизвестных сообщений"""
+    if not is_authorized(message.from_user.id):
+        await message.answer("🔒 Сначала авторизуйтесь: /login пароль")
+        return
+    
+    await message.answer(
+        "❌ Я вас не понял.\n\n"
+        "Используйте кнопки ниже или команды:\n"
+        "/start — главное меню\n"
+        "/cancel — отменить текущее действие",
+        reply_markup=get_main_keyboard()
+    )
+
+# ================ ЗАПУСК БОТА ================
 async def main():
-    print("Запуск бота...")
-    app = Application.builder().token(TOKEN).build()
+    """Главная функция запуска"""
+    print("🚀 Запуск бота...")
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("login", login))
-    app.add_handler(CallbackQueryHandler(button_click))
+    # Инициализируем базу данных
+    await init_db()
     
-    print("Бот работает! Идите в Telegram: @blackbone_sklad_bot")
+    print(f"✅ Бот готов к работе!")
+    print(f"📱 Username: @blackbone_sklad_bot")
+    print("📊 Для остановки нажмите Ctrl+C\n")
     
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    try:
-        while True:
-            await asyncio.sleep(3600)
-            await send_alert(app)
-    except KeyboardInterrupt:
-        await app.stop()
+    # Запускаем бота
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
