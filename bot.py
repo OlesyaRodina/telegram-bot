@@ -9,7 +9,7 @@ from datetime import datetime
 # ================ ДАННЫЕ ================
 TOKEN = "8646923068:AAFC_GwjFNWMCgPid7j8OZzqWZqD-UU6wNU"  # Ваш токен
 PASSWORD = "барбер123"
-OWNER_ID = None 
+OWNER_ID = None
 authorized_users = set()
 DATA_FILE = "materials.json"
 
@@ -37,14 +37,12 @@ materials = {
     18: {'name': 'Воротники', 'category': 'Для мастеров', 'unit': 'упаковка', 'quantity': 4, 'min_stock': 4},
 }
 
-# Загрузка данных
 def load_materials():
     global materials
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
-                # Преобразуем ключи обратно в int
                 materials = {int(k): v for k, v in loaded.items()}
                 print("✅ Данные загружены")
     except:
@@ -61,7 +59,6 @@ def save_materials():
 
 load_materials()
 
-# ================ ФУНКЦИИ ================
 def get_categories():
     cats = set()
     for item in materials.values():
@@ -76,13 +73,12 @@ def check_low_stock():
     return low
 
 async def send_alert(context):
-    """Отправка предупреждения владельцу о мало материалов"""
     if not ALERT_USER_ID:
         return
     
     low_items = check_low_stock()
     if low_items:
-        text = "⚠️ **ВНИМАНИЕ! Закончились материалы:**\n\n"
+        text = "⚠️ ВНИМАНИЕ! Закончились материалы:\n\n"
         for _, msg in low_items:
             text += msg + "\n"
         try:
@@ -90,12 +86,10 @@ async def send_alert(context):
         except:
             pass
 
-# ================ ОБРАБОТЧИКИ ================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Главное меню с кнопками
     keyboard = [
         [InlineKeyboardButton("📦 Посмотреть материалы", callback_data="main_menu")],
         [InlineKeyboardButton("➕ Добавить материалы", callback_data="add_menu")],
@@ -120,7 +114,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.args[0] == PASSWORD:
             authorized_users.add(user_id)
             
-            # Запоминаем владельца
             if OWNER_ID is None:
                 OWNER_ID = user_id
                 ALERT_USER_ID = user_id
@@ -131,7 +124,6 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Используйте /start для главного меню"
             )
             
-            # Проверяем остатки при входе
             await send_alert(context)
         else:
             await update.message.reply_text("❌ Неверный пароль")
@@ -149,7 +141,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
-    # Главное меню
     if data == "main_menu":
         keyboard = []
         for cat in get_categories():
@@ -162,7 +153,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Меню добавления
     elif data == "add_menu":
         keyboard = []
         for id, item in materials.items():
@@ -177,7 +167,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Меню списания
     elif data == "remove_menu":
         keyboard = []
         for id, item in materials.items():
@@ -193,7 +182,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Добавление количества
     elif data.startswith("add_"):
         item_id = int(data.split("_")[1])
         item = materials[item_id]
@@ -214,17 +202,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Списание количества
     elif data.startswith("remove_"):
         item_id = int(data.split("_")[1])
         item = materials[item_id]
         
-        max_amount = min(item['quantity'], 10)  # Не больше чем есть, и не больше 10
+        max_amount = min(item['quantity'], 10)
         keyboard = []
         row = []
         for i in range(1, max_amount + 1):
             row.append(InlineKeyboardButton(f"- {i}", callback_data=f"removeq_{item_id}_{i}"))
-            if len(row) == 3:  # По 3 кнопки в ряд
+            if len(row) == 3:
                 keyboard.append(row)
                 row = []
         if row:
@@ -239,7 +226,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Подтверждение добавления
     elif data.startswith("addq_"):
         parts = data.split("_")
         item_id = int(parts[1])
@@ -257,11 +243,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Стало: {item['quantity']} {item['unit']}"
         )
         
-        # Проверяем остатки после добавления
         await asyncio.sleep(1)
         await send_alert(context)
     
-    # Подтверждение списания
     elif data.startswith("removeq_"):
         parts = data.split("_")
         item_id = int(parts[1])
@@ -280,11 +264,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Стало: {item['quantity']} {item['unit']}"
             )
             
-            # Проверяем остатки после списания
             await asyncio.sleep(1)
             await send_alert(context)
     
-    # Просмотр категории
     elif data.startswith("cat_"):
         cat = data[4:]
         text = f"📁 {cat}:\n\n"
@@ -296,7 +278,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # Всё
     elif data == "all":
         text = "📋 Все материалы:\n\n"
         for id, item in materials.items():
@@ -306,7 +287,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # Проверка остатков
     elif data == "check_low":
         low = check_low_stock()
         if low:
@@ -319,7 +299,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # Назад в главное меню
     elif data == "back_to_main":
         keyboard = [
             [InlineKeyboardButton("📦 Посмотреть материалы", callback_data="main_menu")],
@@ -332,7 +311,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-# ================ ЗАПУСК ================
 async def main():
     print("Запуск бота...")
     app = Application.builder().token(TOKEN).build()
@@ -350,12 +328,9 @@ async def main():
     try:
         while True:
             await asyncio.sleep(3600)
-            # Проверяем остатки каждый час
             await send_alert(app)
-    except:
+    except KeyboardInterrupt:
         await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
