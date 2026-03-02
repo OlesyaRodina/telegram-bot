@@ -128,5 +128,5 @@ async def main():
             await asyncio.sleep(3600)
     except:
         await app.stop()
-
-await main()
+if __name__ == "__main__":
+    asyncio.run(main())
