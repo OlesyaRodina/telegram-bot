@@ -13,7 +13,7 @@ OWNER_ID = None
 authorized_users = set()
 DATA_FILE = "materials.json"
 
-ALERT_USER_ID = @o_lesea
+ALERT_USER_ID = 1007254983
 
 # Материалы
 materials = {
@@ -357,3 +357,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
