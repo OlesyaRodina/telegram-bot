@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # ================ ДАННЫЕ ================
-TOKEN = "8646923068:AAFC_GwjFNWMCgPid7j8OZzqWZqD-UU6wNU"  # Ваш токен
+TOKEN = "8646923068:AAEdgYd6GdqifXBEg5gibYv1_0yglDLYv60"  # Ваш токен
 PASSWORD = "барбер123"
 OWNER_ID = None
 authorized_users = set()
@@ -334,3 +334,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
