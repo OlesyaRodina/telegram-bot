@@ -1,6 +1,5 @@
 import os
 import requests
-import pandas as pd
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import asyncio
@@ -130,3 +129,4 @@ async def main():
         await app.stop()
 if __name__ == "__main__":
     asyncio.run(main())
+
